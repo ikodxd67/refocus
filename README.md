@@ -48,37 +48,34 @@ lib/
     pause_screen.dart           ★ the two-step pause (the signature screen)
   widgets/
     countdown_ring.dart         the 15s ring
-native_reference/               native code to integrate after `flutter create`
-  android/                      AccessibilityService + MethodChannel + manifest
+android/app/src/main/kotlin/com/refocus/refocus/
+  MainActivity.kt               registers the interception channels
+  FocusAccessibilityService.kt  watches launches, sends home, shows the pause
+native_reference/
   ios/                          Shortcuts-automation & Screen Time notes
 ```
 
 ## Running it
 
-Flutter isn't in this repo's platform folders yet (kept slim). To run:
-
 ```bash
-# 1. Install Flutter (stable) and run `flutter doctor`
-# 2. From the refocus/ folder, backfill the android/ios/etc scaffolding
-#    WITHOUT touching lib/ or pubspec.yaml:
-flutter create --org com.refocus --platforms=android,ios .
-
-# 3. Get packages and run
 flutter pub get
-flutter run
+flutter run                 # pick a device (Android phone recommended)
+flutter build apk --debug   # -> build/app/outputs/flutter-apk/app-debug.apk
 ```
 
-The app runs on any target (even desktop) for previewing the UI: native
-interception is a safe no-op off-device, and **"Try a pause now"** on the Home
-screen shows the full pause flow.
+The app also runs on web/desktop for previewing the UI: native interception is
+a safe no-op off-device, and **"Try a pause now"** on the Home screen shows the
+full pause flow.
 
-## Wiring native interception
+## Native interception
 
-- **Android**: copy the files from `native_reference/android/` into
-  `android/app/src/main/kotlin/<your package path>/`, merge the manifest
-  snippet, add the `res/xml` config and the description string. Fix the
-  `package` line to match the `applicationId` `flutter create --org` produced.
-- **iOS**: follow `native_reference/ios/README_iOS.md` — ship the Shortcuts
+- **Android** — integrated. `FocusAccessibilityService` watches
+  `TYPE_WINDOW_STATE_CHANGED`, and when a guarded package opens it sends the
+  user home, brings Refocus to the front, and emits the package over the event
+  channel so the pause screen appears. Enable it once in Settings →
+  Accessibility. (Runtime behaviour needs a real device/emulator; the debug APK
+  builds and installs.)
+- **iOS** — follow `native_reference/ios/README_iOS.md`: ship the Shortcuts
   approach first (full custom pause screen), add Screen Time "strict mode"
   later.
 
@@ -91,8 +88,8 @@ in both themes.
 ## Status
 
 - [x] Shared Flutter UI (all screens) + core logic + offline/AI reframes
-- [x] Android native reference (AccessibilityService + channels)
+- [x] Android native interception wired (AccessibilityService + channels), debug APK builds
 - [x] iOS approach documented (Shortcuts + Screen Time)
-- [ ] `flutter create` platform scaffolding (run locally)
+- [ ] Test interception on a real Android device
 - [ ] iOS URL-scheme hook wired to `PauseScreen`
 - [ ] Real per-app usage minutes via Android UsageStats

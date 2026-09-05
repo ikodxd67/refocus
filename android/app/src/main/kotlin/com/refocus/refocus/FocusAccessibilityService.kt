@@ -1,21 +1,18 @@
-package com.refocus.refocus // <-- match your applicationId after `flutter create`
+package com.refocus.refocus
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
 
 /**
  * Watches which app comes to the foreground and, when it's one of the guarded
- * packages, pushes the package name up to Flutter over the EventChannel.
+ * packages, sends the user home, brings Refocus forward, and tells Flutter to
+ * show the pause screen.
  *
- * This is the Android half of the "Application Monitoring Module" from the
- * research report — the same TYPE_WINDOW_STATE_CHANGED mechanism, no root.
- *
- * Wiring (see MainActivity.kt):
- *  - Flutter calls `syncGuarded` -> updates [guardedPackages].
- *  - This service emits the package -> Flutter shows the pause screen.
- *  - Flutter calls `goHome` -> [goHomeNow].
+ * Android half of the report's "Application Monitoring Module" — the same
+ * TYPE_WINDOW_STATE_CHANGED mechanism, no root.
  */
 class FocusAccessibilityService : AccessibilityService() {
 
@@ -54,9 +51,19 @@ class FocusAccessibilityService : AccessibilityService() {
         lastPackage = pkg
 
         if (guardedPackages.contains(pkg)) {
-            // Send the user home immediately so the feed never really loads,
-            // then let Flutter present the pause over our own window.
+            // Home first, so the feed never really loads.
             performGlobalAction(GLOBAL_ACTION_HOME)
+
+            // Bring Refocus to the front so it can present the pause screen.
+            val launch = packageManager.getLaunchIntentForPackage(packageName)
+            if (launch != null) {
+                launch.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                )
+                launch.putExtra("triggered_package", pkg)
+                startActivity(launch)
+            }
+
             main.post { emit?.invoke(pkg) }
         }
     }
