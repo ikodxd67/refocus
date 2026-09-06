@@ -83,6 +83,14 @@ class _GateState extends State<_Gate> {
     _channel.syncGuardedPackages(_settings.guardedPackages);
     _settings.addListener(_syncGuard);
     _sub = _channel.triggers.listen(_onAppOpened);
+
+    // Pull real foreground minutes once at launch; never from a listener, so
+    // it can't loop with the screens that refresh on repository changes.
+    unawaited(
+      context
+          .read<InsightsRepository>()
+          .syncUsage(packages: _settings.guardedPackages),
+    );
   }
 
   void _syncGuard() => _channel.syncGuardedPackages(_settings.guardedPackages);

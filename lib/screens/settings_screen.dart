@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/insights_repository.dart';
 import '../services/settings_controller.dart';
 import '../theme.dart';
 
@@ -107,6 +108,10 @@ class SettingsScreen extends StatelessWidget {
             ]),
 
             const SizedBox(height: 16),
+            _Label('Measured usage', p),
+            _Card(p, const [_UsageAccessRow(last: true)]),
+
+            const SizedBox(height: 16),
             _Label('Appearance', p),
             _Card(p, [
               for (final mode in ThemeMode.values)
@@ -195,6 +200,77 @@ class SettingsScreen extends StatelessWidget {
               child: const Text('Save')),
         ],
       ),
+    );
+  }
+}
+
+/// Usage access is a special Android permission, so it needs its own row that
+/// reflects the live system state rather than something we store.
+class _UsageAccessRow extends StatefulWidget {
+  final bool last;
+  const _UsageAccessRow({this.last = false});
+
+  @override
+  State<_UsageAccessRow> createState() => _UsageAccessRowState();
+}
+
+class _UsageAccessRowState extends State<_UsageAccessRow>
+    with WidgetsBindingObserver {
+  bool? _granted;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _check();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-check when returning from the system settings page.
+    if (state == AppLifecycleState.resumed) _check();
+  }
+
+  Future<void> _check() async {
+    final repo = context.read<InsightsRepository>();
+    final granted = await repo.hasUsageAccess();
+    if (!mounted) return;
+    setState(() => _granted = granted);
+    if (granted) {
+      await repo.syncUsage(
+        packages: context.read<SettingsController>().guardedPackages,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = AppPalette.of(context);
+    final granted = _granted;
+
+    return _Row(
+      p,
+      icon: '📊',
+      title: 'Usage access',
+      subtitle: granted == null
+          ? 'Checking…'
+          : granted
+              ? 'Granted — real minutes feed your charts'
+              : 'Not granted — charts and the cost line stay empty',
+      trailing: granted == true
+          ? Icon(Icons.check, color: p.teal, size: 20)
+          : TextButton(
+              onPressed: () =>
+                  context.read<InsightsRepository>().requestUsageAccess(),
+              child: const Text('Grant'),
+            ),
+      last: widget.last,
     );
   }
 }

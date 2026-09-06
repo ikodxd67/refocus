@@ -5,6 +5,7 @@ import '../analytics/analytics_engine.dart';
 import '../analytics/models.dart';
 import '../ml/model_evaluation.dart';
 import '../ml/risk_model.dart';
+import '../services/usage_stats_channel.dart';
 import 'database.dart';
 
 /// Ties the event log, the analytics engine and the risk model together.
@@ -15,6 +16,7 @@ class InsightsRepository extends ChangeNotifier {
   final AppDatabase db;
   final AnalyticsEngine engine;
   final ModelEvaluator evaluator;
+  final UsageStatsChannel usage;
 
   RiskModel _model = RiskModel.untrained();
   RiskModel get model => _model;
@@ -23,7 +25,8 @@ class InsightsRepository extends ChangeNotifier {
     required this.db,
     this.engine = const AnalyticsEngine(),
     this.evaluator = const ModelEvaluator(),
-  });
+    UsageStatsChannel? usage,
+  }) : usage = usage ?? UsageStatsChannel();
 
   /// Load persisted weights; retrain from the log if we have events but no
   /// weights yet (e.g. first run after an update).
@@ -203,6 +206,39 @@ class InsightsRepository extends ChangeNotifier {
       await db.saveUsage(day, e.key, e.value);
     }
     notifyListeners();
+  }
+
+  Future<bool> hasUsageAccess() => usage.hasAccess();
+
+  Future<void> requestUsageAccess() => usage.requestAccess();
+
+  /// Pull the last [days] days of real foreground time for the guarded apps.
+  ///
+  /// Only guarded packages are stored — the app has no reason to keep a record
+  /// of everything else the phone runs. Notifies once at the end, so callers
+  /// that listen to this repository can't trigger a refresh loop.
+  Future<void> syncUsage({
+    required Set<String> packages,
+    int days = 7,
+  }) async {
+    if (packages.isEmpty || !await usage.hasAccess()) return;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    var wrote = false;
+
+    for (var i = 0; i < days; i++) {
+      final day = today.subtract(Duration(days: i));
+      final minutes =
+          await usage.minutesBetween(day, day.add(const Duration(days: 1)));
+
+      for (final e in minutes.entries) {
+        if (!packages.contains(e.key)) continue;
+        await db.saveUsage(day, e.key, e.value);
+        wrote = true;
+      }
+    }
+    if (wrote) notifyListeners();
   }
 
   static PauseRecord _toRecord(InterventionEvent e) => PauseRecord(
