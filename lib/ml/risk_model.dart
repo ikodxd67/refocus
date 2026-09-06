@@ -194,7 +194,7 @@ class RiskModel {
     final samples = buildSamples(records);
     if (samples.isEmpty) return RiskModel.untrained();
 
-    var weights = {for (final f in featureNames) f: 0.0};
+    final weights = {for (final f in featureNames) f: 0.0};
 
     for (var epoch = 0; epoch < epochs; epoch++) {
       for (final s in samples) {

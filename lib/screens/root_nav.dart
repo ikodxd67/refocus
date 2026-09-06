@@ -3,9 +3,10 @@ import 'package:flutter/material.dart';
 import '../theme.dart';
 import 'apps_screen.dart';
 import 'home_screen.dart';
+import 'insights_screen.dart';
 import 'settings_screen.dart';
 
-/// The bottom-tab shell — Home · Apps · Settings.
+/// The bottom-tab shell — Home · Apps · Insights · Settings.
 class RootNav extends StatefulWidget {
   const RootNav({super.key});
 
@@ -16,7 +17,12 @@ class RootNav extends StatefulWidget {
 class _RootNavState extends State<RootNav> {
   int _index = 0;
 
-  static const _screens = [HomeScreen(), AppsScreen(), SettingsScreen()];
+  static const _screens = [
+    HomeScreen(),
+    AppsScreen(),
+    InsightsScreen(),
+    SettingsScreen(),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -51,6 +57,11 @@ class _RootNavState extends State<RootNav> {
                 icon: Icon(Icons.grid_view_outlined, color: p.faint),
                 selectedIcon: Icon(Icons.grid_view_rounded, color: p.teal),
                 label: 'Apps',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.insights_outlined, color: p.faint),
+                selectedIcon: Icon(Icons.insights_rounded, color: p.teal),
+                label: 'Insights',
               ),
               NavigationDestination(
                 icon: Icon(Icons.settings_outlined, color: p.faint),

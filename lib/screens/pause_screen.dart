@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/insights_repository.dart';
+import '../ml/risk_model.dart';
 import '../models/pause_reason.dart';
 import '../services/interception_channel.dart';
 import '../services/reframe_service.dart';
@@ -14,8 +16,10 @@ import '../widgets/countdown_ring.dart';
 enum PauseOutcome { home, openedAnyway }
 
 /// The signature screen. Shown full-screen the moment a guarded app opens.
-/// Step 1: name the intention. Step 2: a personal reframe + the real cost,
-/// with "go home" locked behind a 15-second countdown.
+///
+/// Step 1: name the intention. Step 2: a personal reframe plus the real cost,
+/// with "go home" locked behind a countdown whose length the on-device risk
+/// model chooses.
 class PauseScreen extends StatefulWidget {
   final String appName;
   final String packageName;
@@ -54,35 +58,63 @@ class PauseScreen extends StatefulWidget {
 }
 
 class _PauseScreenState extends State<PauseScreen> {
-  static const _total = 15;
-
   PauseReason? _reason;
-  Reframe? _reframe;
-  int _left = _total;
-  Timer? _timer;
+  PauseContext? _context;
+  double? _risk;
+  List<FeatureContribution> _why = const [];
 
-  void _chooseReason(PauseReason r) {
-    final c = context.read<SettingsController>();
-    c.recordIntervention(widget.packageName);
+  Reframe? _reframe;
+  int _total = 15;
+  int _left = 15;
+  Timer? _timer;
+  bool _recorded = false;
+
+  Future<void> _chooseReason(PauseReason r) async {
+    final repo = context.read<InsightsRepository>();
+    final settings = context.read<SettingsController>();
+
     setState(() => _reason = r);
+    settings.markIntervened(widget.packageName);
+
+    final ctx = await repo.contextFor(
+      packageName: widget.packageName,
+      reason: r.id,
+    );
+    final risk = repo.riskFor(ctx);
+    final seconds = repo.adaptivePauseSeconds(risk);
+
+    if (!mounted) return;
+    setState(() {
+      _context = ctx;
+      _risk = risk;
+      _why = repo.explain(ctx);
+      _total = seconds;
+      _left = seconds;
+    });
     _startCountdown();
-    _loadReframe(c);
+    await _loadReframe(repo, settings, ctx);
   }
 
-  Future<void> _loadReframe(SettingsController c) async {
+  Future<void> _loadReframe(
+    InsightsRepository repo,
+    SettingsController settings,
+    PauseContext ctx,
+  ) async {
+    final minutes = await repo.minutesToday();
     final rf = await widget.reframeService.build(
       appName: widget.appName,
       reason: _reason!,
-      goal: c.goalText,
-      opensToday: c.opensToday,
-      minutesToday: c.minutesToday,
-      aiReady: c.aiReady,
-      apiKey: c.apiKey,
+      goal: settings.goalText,
+      opensToday: ctx.opensBefore,
+      minutesToday: minutes,
+      aiReady: settings.aiReady,
+      apiKey: settings.apiKey,
     );
     if (mounted) setState(() => _reframe = rf);
   }
 
   void _startCountdown() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (_left <= 0) {
         t.cancel();
@@ -92,13 +124,26 @@ class _PauseScreenState extends State<PauseScreen> {
     });
   }
 
-  void _goHome() {
-    context.read<SettingsController>().recordWentHome();
-    InterceptionChannel().goHome();
-    Navigator.of(context).pop(PauseOutcome.home);
-  }
+  Future<void> _finish(bool wentHome) async {
+    if (_recorded) return;
+    _recorded = true;
 
-  void _openAnyway() => Navigator.of(context).pop(PauseOutcome.openedAnyway);
+    final ctx = _context;
+    if (ctx != null) {
+      await context.read<InsightsRepository>().recordPause(
+            context: ctx,
+            packageName: widget.packageName,
+            appName: widget.appName,
+            wentHome: wentHome,
+            pauseSeconds: _total,
+            riskScore: _risk,
+          );
+    }
+    if (wentHome) await InterceptionChannel().goHome();
+    if (!mounted) return;
+    Navigator.of(context)
+        .pop(wentHome ? PauseOutcome.home : PauseOutcome.openedAnyway);
+  }
 
   @override
   void dispose() {
@@ -163,19 +208,29 @@ class _PauseScreenState extends State<PauseScreen> {
   // ---- Step 2: reframe + countdown ----
   Widget _buildReframe() {
     final unlocked = _left <= 0;
+    final risk = _risk;
+    final highRisk = risk != null && risk >= 0.6;
+
     return Column(
       children: [
-        const SizedBox(height: 14),
+        const SizedBox(height: 12),
         Text('${_reason!.label} · ${widget.appName} paused',
             style: const TextStyle(
                 color: NightPalette.muted,
                 fontSize: 12,
                 fontWeight: FontWeight.w600)),
-        const SizedBox(height: 18),
+        const SizedBox(height: 14),
         CountdownRing(secondsLeft: _left, total: _total),
-        const SizedBox(height: 22),
-        _ReframeCard(reframe: _reframe),
-        const Spacer(),
+        if (highRisk) ...[
+          const SizedBox(height: 12),
+          _RiskBadge(risk: risk, why: _why),
+        ],
+        const SizedBox(height: 18),
+        Expanded(
+          child: SingleChildScrollView(
+            child: _ReframeCard(reframe: _reframe),
+          ),
+        ),
         Text(
           unlocked ? 'Your call now 👇' : 'Home unlocks in ${_left}s',
           style: const TextStyle(color: NightPalette.muted, fontSize: 12),
@@ -185,17 +240,57 @@ class _PauseScreenState extends State<PauseScreen> {
           label: 'Not now — take me home',
           filled: true,
           enabled: unlocked,
-          onTap: _goHome,
+          onTap: () => _finish(true),
         ),
         const SizedBox(height: 9),
         _PauseButton(
           label: 'Open for 5 min',
           filled: false,
           enabled: true,
-          onTap: _openAnyway,
+          onTap: () => _finish(false),
         ),
         const SizedBox(height: 18),
       ],
+    );
+  }
+}
+
+/// Surfaces the model's judgement — and, crucially, why it thinks so.
+class _RiskBadge extends StatelessWidget {
+  final double risk;
+  final List<FeatureContribution> why;
+
+  const _RiskBadge({required this.risk, required this.why});
+
+  @override
+  Widget build(BuildContext context) {
+    final top = why.where((w) => w.contribution > 0).take(2).toList();
+    final reason = top.isEmpty
+        ? 'this kind of moment'
+        : top.map((t) => t.label.toLowerCase()).join(' + ');
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0x22E0A45E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0x55E0A45E)),
+      ),
+      child: Column(
+        children: [
+          Text('Historically a risky moment for you — ${(risk * 100).round()}%',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: Color(0xFFE0A45E),
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 2),
+          Text(reason,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: NightPalette.muted, fontSize: 11.5)),
+        ],
+      ),
     );
   }
 }

@@ -5,12 +5,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/guarded_app.dart';
 
-/// Single source of truth for user configuration and lightweight stats.
+/// User configuration: what to guard, how often to interrupt, and the AI
+/// settings.
 ///
-/// Everything lives locally in [SharedPreferences] as one JSON blob — no
-/// account, no server. Screens listen to this via `provider`.
+/// Statistics deliberately do **not** live here — every number the app reports
+/// is derived from the event log in the database, so there is a single source
+/// of truth. This class only keeps settings plus the last-intervention
+/// timestamps that drive the "no more than once every N minutes" rule.
 class SettingsController extends ChangeNotifier {
-  static const _key = 'refocus_state_v1';
+  static const _key = 'refocus_state_v2';
 
   final SharedPreferences _prefs;
 
@@ -28,13 +31,7 @@ class SettingsController extends ChangeNotifier {
   bool onboardingDone = false;
   ThemeMode themeMode = ThemeMode.system;
 
-  // ---- runtime state / stats ----
   final Map<String, int> _lastInterventionMs = {}; // package -> epoch ms
-  int opensToday = 0;
-  int minutesToday = 0; // filled by native UsageStats when available
-  int streakDays = 0;
-  String _statsDay = _today();
-  String _lastPauseDay = '';
 
   // ---- derived ----
   int get guardedCount => apps.where((a) => a.guarded).length;
@@ -47,8 +44,15 @@ class SettingsController extends ChangeNotifier {
 
   bool get aiReady => aiEnabled && apiKey.trim().isNotEmpty;
 
+  GuardedApp? appFor(String packageName) {
+    for (final a in apps) {
+      if (a.packageName == packageName) return a;
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------------------
-  // Intervention decision — the core rule that keeps pauses from spamming.
+  // Intervention rule
   // ---------------------------------------------------------------------------
 
   /// Whether opening [package] right now should trigger a pause.
@@ -62,27 +66,11 @@ class SettingsController extends ChangeNotifier {
     return elapsedMin >= minIntervalMinutes;
   }
 
-  /// Record that a pause was shown for [package] and roll daily counters.
-  void recordIntervention(String package) {
-    _rollDayIfNeeded();
+  /// Remember that we just interrupted [package], so we don't do it again
+  /// before the configured interval has passed.
+  void markIntervened(String package) {
     _lastInterventionMs[package] = DateTime.now().millisecondsSinceEpoch;
-    opensToday += 1;
     _save();
-    notifyListeners();
-  }
-
-  /// User chose "take me home" — counts toward today's streak.
-  void recordWentHome() {
-    final today = _today();
-    if (_lastPauseDay != today) {
-      // consecutive day? bump streak, otherwise restart at 1
-      final yesterday = _dayString(
-          DateTime.now().subtract(const Duration(days: 1)));
-      streakDays = (_lastPauseDay == yesterday) ? streakDays + 1 : 1;
-      _lastPauseDay = today;
-      _save();
-      notifyListeners();
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -141,15 +129,6 @@ class SettingsController extends ChangeNotifier {
   // Persistence
   // ---------------------------------------------------------------------------
 
-  void _rollDayIfNeeded() {
-    final today = _today();
-    if (today != _statsDay) {
-      _statsDay = today;
-      opensToday = 0;
-      minutesToday = 0;
-    }
-  }
-
   void _load() {
     final raw = _prefs.getString(_key);
     if (raw == null) return;
@@ -163,11 +142,6 @@ class SettingsController extends ChangeNotifier {
       onboardingDone = j['onboardingDone'] as bool? ?? false;
       themeMode = ThemeMode.values[(j['themeMode'] as int? ?? 0)
           .clamp(0, ThemeMode.values.length - 1)];
-      opensToday = j['opensToday'] as int? ?? 0;
-      minutesToday = j['minutesToday'] as int? ?? 0;
-      streakDays = j['streakDays'] as int? ?? 0;
-      _statsDay = j['statsDay'] as String? ?? _today();
-      _lastPauseDay = j['lastPauseDay'] as String? ?? '';
 
       final appsJson = j['apps'] as List<dynamic>?;
       if (appsJson != null && appsJson.isNotEmpty) {
@@ -180,7 +154,6 @@ class SettingsController extends ChangeNotifier {
         _lastInterventionMs
             .addAll(li.map((k, v) => MapEntry(k, (v as num).toInt())));
       }
-      _rollDayIfNeeded();
     } catch (_) {
       // Corrupt state -> fall back to defaults silently.
     }
@@ -195,18 +168,9 @@ class SettingsController extends ChangeNotifier {
       'apiKey': apiKey,
       'onboardingDone': onboardingDone,
       'themeMode': themeMode.index,
-      'opensToday': opensToday,
-      'minutesToday': minutesToday,
-      'streakDays': streakDays,
-      'statsDay': _statsDay,
-      'lastPauseDay': _lastPauseDay,
       'apps': apps.map((a) => a.toJson()).toList(),
       'lastInterventionMs': _lastInterventionMs,
     };
     await _prefs.setString(_key, jsonEncode(j));
   }
-
-  static String _today() => _dayString(DateTime.now());
-  static String _dayString(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 }
